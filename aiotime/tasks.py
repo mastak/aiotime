@@ -3,13 +3,13 @@ import functools
 import inspect
 import logging
 import time
-from asyncio import coroutines
+from inspect import getcoroutinelocals
 
 
 logger = logging.getLogger('aiotime')
 
 
-def coro_time(handlers=None):
+def coro_time_(handlers=None):
     def decorator(func):
         @functools.wraps(func)
         async def wrapper(*args, **kwargs):
@@ -18,9 +18,9 @@ def coro_time(handlers=None):
             # _print_vals(inspect.stack())
             # print(func)
             # print(inspect.getouterframes(func.cr_frame))
-            # outer_frames = inspect.getouterframes(inspect.currentframe())
-            # for f in outer_frames:
-            #     print(inspect.getframeinfo(f.frame))
+            outer_frames = inspect.getouterframes(inspect.currentframe())
+            for f in outer_frames:
+                print(inspect.getframeinfo(f.frame))
             # print(len(outer_frames), "\n\n")
             # print(inspect.currentframe().f_back)
 
@@ -31,25 +31,40 @@ def coro_time(handlers=None):
     return decorator
 
 
-def _results_handler(handlers, task):
+def coro_time(func=None, *, handlers=None):
+    if func is None:
+        return functools.partial(coro_time, handlers=handlers)
+
+    @functools.wraps(func)
+    @asyncio.coroutine
+    def wrapper(*args, **kwargs):
+        task = TimedTask(func(*args, **kwargs))
+
+        stack_function = []
+        outer_frames = inspect.getouterframes(inspect.currentframe())
+        for f in outer_frames:
+            traceback = inspect.getframeinfo(f.frame)
+            stack_function.append(traceback.function)
+            print(inspect.getframeinfo(f.frame))
+
+        print("Stack functions", stack_function)
+        print("\n\n")
+
+        run_traceback = inspect.getframeinfo(inspect.currentframe().f_back)
+        local_vars = str(getcoroutinelocals(task._coro))[:200]
+
+        task.add_done_callback(functools.partial(_results_handler, handlers, local_vars, run_traceback))
+        return (yield from task)
+    return wrapper
+
+
+
+def _results_handler(handlers, local_vars, run_traceback, task):
     if handlers is None:
         return
 
     for h in handlers:
-        h(task)
-
-
-def print_res(fut):
-    # print(_get_vals(fut._coro))
-    # print(_get_vals(fut._coro.cr_code))
-    # import ipdb; ipdb.set_trace()
-
-    async def f():
-        print("Task done", coroutines._format_coroutine(fut._coro), fut._run_info, fut.get_time_reault())
-        # print(inspect.getouterframes(fut._coro.cr_frame))
-
-    asyncio.ensure_future(f())
-    # print("Task done", dir(fut))
+        h(task, local_vars, run_traceback)
 
 
 class TimedTask(asyncio.Task):
@@ -58,15 +73,10 @@ class TimedTask(asyncio.Task):
         self._timeit = 0.0
         self._run_info = None
 
-    def get_time_reault(self):
+    def get_time_result(self):
         return self._timeit
 
     def _step(self, *args, **kwargs):
-        # print("="*80)
-        # for i, v in _get_vals(self._coro.cr_frame).items():
-        #     print(i, v)
-        #     print("\n\n")
-
         start = time.time()
         result = super()._step(*args, **kwargs)
         self._timeit += time.time() - start
@@ -88,16 +98,3 @@ class TimedTask(asyncio.Task):
             # print(frame_info._asdict())
             self._run_info = 1
         return result
-
-
-def _get_vals(obj):
-    return {i: getattr(obj, i) for i in dir(obj) if not i.startswith("__")}
-
-
-def _print_vals(obj):
-    for i in dir(obj):
-        if i.startswith("__"):
-            continue
-        print("\n\n")
-        print(i, getattr(obj, i))
-    # return [i for i in dir(obj) if not i.startswith("__")]
